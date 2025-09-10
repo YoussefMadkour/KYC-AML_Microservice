@@ -27,3 +27,6 @@ httpx>=0.25.0
 python-dotenv>=1.0.0
 structlog>=23.2.0
 rich>=13.7.0
+
+# Monitoring
+flower>=2.0.0

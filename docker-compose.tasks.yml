@@ -1,45 +1,13 @@
 # Docker Compose configuration for task processing infrastructure
-# This demonstrates the Celery + RabbitMQ + Redis setup for task 7
+# This demonstrates the Celery + RabbitMQ + Redis setup for development and testing
 
-version: '3.8'
+name: kyc-aml-tasks
 
 services:
-  # RabbitMQ - Message broker for Celery
-  rabbitmq:
-    image: rabbitmq:3.12-management
-    container_name: kyc_rabbitmq
-    ports:
-      - "5672:5672"      # AMQP port
-      - "15672:15672"    # Management UI
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Redis - Result backend and caching
-  redis:
-    image: redis:7-alpine
-    container_name: kyc_redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
   # PostgreSQL - Main database
   postgres:
     image: postgres:15-alpine
-    container_name: kyc_postgres
+    container_name: kyc_postgres_tasks
     ports:
       - "5432:5432"
     environment:
@@ -50,15 +18,120 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kyc_user -d kyc_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  # Redis - Result backend and caching
+  redis:
+    image: redis:7-alpine
+    container_name: kyc_redis_tasks
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+
+  # RabbitMQ - Message broker for Celery
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: kyc_rabbitmq_tasks
+    ports:
+      - "5672:5672"      # AMQP port
+      - "15672:15672"    # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  # Celery Worker for task processing
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: kyc_worker_tasks
+    environment:
+      DATABASE_URL: postgresql://kyc_user:kyc_password@postgres:5432/kyc_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      ENVIRONMENT: development
+      LOG_LEVEL: DEBUG
+    volumes:
+      - ./logs:/app/logs
+      - .:/app  # Mount source code for development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.worker", "inspect", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+    restart: unless-stopped
+
+  # Flower - Celery monitoring
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: kyc_flower_tasks
+    command: celery -A app.worker flower --port=5555 --broker=amqp://guest:guest@rabbitmq:5672//
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      - rabbitmq
+      - redis
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    restart: unless-stopped
 
 volumes:
-  rabbitmq_data:
-  redis_data:
   postgres_data:
+  redis_data:
+  rabbitmq_data:
 
 networks:
   default:
-    name: kyc_network
+    name: kyc_aml_tasks_network

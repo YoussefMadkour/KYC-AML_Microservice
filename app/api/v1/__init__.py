@@ -3,7 +3,7 @@ API version 1 router configuration.
 """
 from fastapi import APIRouter
 
-from app.api.v1 import auth, users, kyc
+from app.api.v1 import auth, users, kyc, webhooks
 
 api_router = APIRouter()
 
@@ -15,3 +15,6 @@ api_router.include_router(users.router, prefix="/users", tags=["users"])
 
 # Include KYC verification routes
 api_router.include_router(kyc.router, prefix="/kyc", tags=["kyc"])
+
+# Include webhook routes
+api_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])

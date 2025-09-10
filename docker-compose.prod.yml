@@ -1,0 +1,193 @@
+name: kyc-aml-microservice-prod
+
+services:
+  # Database services
+  postgres:
+    image: postgres:15-alpine
+    container_name: kyc_postgres_prod
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kyc_db}
+      POSTGRES_USER: ${POSTGRES_USER:-kyc_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kyc_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kyc_user} -d ${POSTGRES_DB:-kyc_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    restart: unless-stopped
+    networks:
+      - kyc_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: kyc_redis_prod
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    restart: unless-stopped
+    networks:
+      - kyc_network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: kyc_rabbitmq_prod
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-secret_cookie}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    restart: unless-stopped
+    networks:
+      - kyc_network
+
+  # Application services
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: kyc_api_prod
+    env_file:
+      - .env.docker
+    environment:
+      ENVIRONMENT: production
+      DEBUG: false
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs:rw
+      - ./uploads:/app/uploads:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+      replicas: 2
+    restart: unless-stopped
+    networks:
+      - kyc_network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - .env.docker
+    environment:
+      ENVIRONMENT: production
+      DEBUG: false
+    volumes:
+      - ./logs:/app/logs:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.worker", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+      replicas: 3
+    restart: unless-stopped
+    networks:
+      - kyc_network
+
+  # Load balancer (optional for production)
+  nginx:
+    image: nginx:alpine
+    container_name: kyc_nginx_prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx:rw
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    restart: unless-stopped
+    networks:
+      - kyc_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+
+networks:
+  kyc_network:
+    driver: bridge

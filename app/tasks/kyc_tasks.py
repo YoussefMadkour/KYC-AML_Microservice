@@ -15,6 +15,7 @@ from app.models.kyc import KYCStatus
 from app.repositories.kyc_repository import KYCRepository
 from app.services.kyc_service import KYCService
 from app.services.mock_provider import MockProviderService, ProviderType, VerificationOutcome
+from app.services.mock_webhook_sender import mock_webhook_sender
 from app.tasks.base import KYCTask, TaskResult
 from app.utils.logging import get_logger
 from app.worker import celery_app
@@ -168,6 +169,23 @@ def process_kyc_verification(self, kyc_check_id: str, provider: str = "jumio", *
         
         if not updated_check:
             raise BusinessLogicError(f"Failed to update KYC check {kyc_check_id}")
+        
+        # Schedule webhook to simulate provider callback
+        try:
+            provider_type = ProviderType(provider)
+            webhook_schedule_id = loop.run_until_complete(
+                mock_webhook_sender.schedule_webhook(
+                    kyc_check_id=kyc_check_id,
+                    user_id=str(kyc_check.user_id),
+                    provider_type=provider_type,
+                    provider_reference=provider_response.provider_reference,
+                    outcome=provider_response.overall_status
+                )
+            )
+            logger.info(f"Webhook scheduled for KYC check {kyc_check_id}: {webhook_schedule_id}")
+        except Exception as webhook_error:
+            logger.warning(f"Failed to schedule webhook for KYC check {kyc_check_id}: {webhook_error}")
+            # Don't fail the task if webhook scheduling fails
         
         # Create success result
         result_data = {

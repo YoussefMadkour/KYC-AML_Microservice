@@ -1,6 +1,7 @@
-version: '3.8'
+name: kyc-aml-microservice
 
 services:
+  # Database services
   postgres:
     image: postgres:15-alpine
     container_name: kyc_postgres
@@ -17,6 +18,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
   redis:
     image: redis:7-alpine
@@ -30,6 +39,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
@@ -47,6 +64,155 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  # Application services
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: kyc_api
+    environment:
+      # Database configuration
+      DATABASE_URL: postgresql://kyc_user:kyc_password@postgres:5432/kyc_db
+      
+      # Redis configuration
+      REDIS_URL: redis://redis:6379/0
+      
+      # Celery configuration
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      
+      # Application configuration
+      ENVIRONMENT: development
+      SECRET_KEY: your-secret-key-change-in-production
+      ALLOWED_HOSTS: '["*"]'
+      
+      # Security configuration
+      ENCRYPTION_KEY: your-encryption-key-change-in-production
+      JWT_SECRET_KEY: your-jwt-secret-change-in-production
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      
+      # Webhook configuration
+      WEBHOOK_SECRET_KEY: your-webhook-secret-change-in-production
+      
+      # Logging
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: kyc_worker
+    environment:
+      # Database configuration
+      DATABASE_URL: postgresql://kyc_user:kyc_password@postgres:5432/kyc_db
+      
+      # Redis configuration
+      REDIS_URL: redis://redis:6379/0
+      
+      # Celery configuration
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      
+      # Application configuration
+      ENVIRONMENT: development
+      SECRET_KEY: your-secret-key-change-in-production
+      
+      # Security configuration
+      ENCRYPTION_KEY: your-encryption-key-change-in-production
+      
+      # Webhook configuration
+      WEBHOOK_SECRET_KEY: your-webhook-secret-change-in-production
+      
+      # Logging
+      LOG_LEVEL: INFO
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.worker", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    restart: unless-stopped
+
+  # Optional: Flower for Celery monitoring
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: kyc_flower
+    command: celery -A app.worker flower --port=5555
+    environment:
+      # Celery configuration
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    ports:
+      - "5555:5555"
+    depends_on:
+      - rabbitmq
+      - redis
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    restart: unless-stopped
 
 volumes:
   postgres_data:
