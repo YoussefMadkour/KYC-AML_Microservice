@@ -13,6 +13,9 @@ A production-ready FastAPI microservice that simulates real-world fintech KYC (K
 - 📊 **Structured Logging** with correlation IDs
 - 🐳 **Docker Containerization** for consistent deployment
 - 🧪 **Comprehensive Testing** with pytest and testcontainers
+- 🔄 **CI/CD Pipeline** with GitHub Actions
+- 🛡️ **Security Monitoring** with automated vulnerability scanning
+- 📈 **Performance Testing** with load testing and monitoring
 
 ## Quick Start
 
@@ -144,6 +147,9 @@ celery -A app.worker worker --loglevel=info
 # Database migrations
 alembic revision --autogenerate -m "Description"
 alembic upgrade head
+
+# Validate CI/CD setup
+./scripts/validate-ci.sh
 ```
 
 ## Configuration
@@ -165,6 +171,22 @@ Key configuration areas:
 - Webhook signature verification
 - Rate limiting and request validation
 - Comprehensive audit logging
+- Automated security scanning in CI/CD pipeline
+- Dependency vulnerability monitoring
+- Container security scanning
+
+## CI/CD Pipeline
+
+The project includes a comprehensive CI/CD pipeline with GitHub Actions:
+
+- **Automated Testing**: Unit, integration, and end-to-end tests
+- **Code Quality**: Linting, formatting, and type checking
+- **Security Scanning**: Dependency and code vulnerability scanning
+- **Performance Testing**: Load testing and performance monitoring
+- **Automated Deployment**: Staging and production deployments
+- **Dependency Management**: Automated dependency updates with Dependabot
+
+See [docs/ci-cd-setup.md](docs/ci-cd-setup.md) for detailed setup instructions.
 
 ## License
 

@@ -1,0 +1,132 @@
+name: Dependabot Auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    
+    steps:
+    - name: Check if PR is from Dependabot
+      id: dependabot-check
+      run: |
+        if [[ "${{ github.actor }}" == "dependabot[bot]" ]]; then
+          echo "is_dependabot=true" >> $GITHUB_OUTPUT
+        else
+          echo "is_dependabot=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Get PR details
+      if: steps.dependabot-check.outputs.is_dependabot == 'true'
+      id: pr-details
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const pr = await github.rest.pulls.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number
+          });
+          
+          const title = pr.data.title.toLowerCase();
+          const isMinor = title.includes('minor') || title.includes('patch');
+          const isSecurity = title.includes('security') || pr.data.body.includes('security');
+          
+          return {
+            isMinor: isMinor,
+            isSecurity: isSecurity,
+            title: pr.data.title
+          };
+
+    - name: Wait for CI to complete
+      if: steps.dependabot-check.outputs.is_dependabot == 'true'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const { owner, repo } = context.repo;
+          const { number: pull_number } = context.issue;
+          
+          // Wait for all required checks to complete
+          let allChecksPassed = false;
+          let attempts = 0;
+          const maxAttempts = 30; // 15 minutes max wait
+          
+          while (!allChecksPassed && attempts < maxAttempts) {
+            const { data: checks } = await github.rest.checks.listForRef({
+              owner,
+              repo,
+              ref: context.payload.pull_request.head.sha
+            });
+            
+            const requiredChecks = ['test', 'code-quality', 'security-scan'];
+            const completedChecks = checks.check_runs.filter(check => 
+              requiredChecks.includes(check.name) && 
+              check.status === 'completed'
+            );
+            
+            if (completedChecks.length === requiredChecks.length) {
+              const failedChecks = completedChecks.filter(check => 
+                check.conclusion !== 'success'
+              );
+              
+              if (failedChecks.length === 0) {
+                allChecksPassed = true;
+              } else {
+                throw new Error(`Required checks failed: ${failedChecks.map(c => c.name).join(', ')}`);
+              }
+            }
+            
+            if (!allChecksPassed) {
+              await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+              attempts++;
+            }
+          }
+          
+          if (!allChecksPassed) {
+            throw new Error('Timeout waiting for required checks to complete');
+          }
+
+    - name: Auto-approve and merge
+      if: steps.dependabot-check.outputs.is_dependabot == 'true'
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const prDetails = ${{ steps.pr-details.outputs.result }};
+          
+          // Auto-approve minor/patch updates and security updates
+          if (prDetails.isMinor || prDetails.isSecurity) {
+            // Approve the PR
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              event: 'APPROVE',
+              body: 'Auto-approving Dependabot PR for minor/patch/security update'
+            });
+            
+            // Merge the PR
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              merge_method: 'squash',
+              commit_title: `${prDetails.title} (#${context.issue.number})`,
+              commit_message: 'Auto-merged by Dependabot workflow'
+            });
+            
+            console.log('Successfully auto-merged Dependabot PR');
+          } else {
+            console.log('PR requires manual review (major version update)');
+            
+            // Add a comment explaining why it wasn't auto-merged
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '🤖 This Dependabot PR contains a major version update and requires manual review before merging.'
+            });
+          }

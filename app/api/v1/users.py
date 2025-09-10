@@ -1,38 +1,32 @@
 """
 User management API endpoints.
 """
+
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import (
-    get_current_active_user,
-    get_current_admin_user,
-    get_db
-)
+from app.api.deps import get_current_active_user, get_current_admin_user, get_db
 from app.models.user import User, UserRole
 from app.repositories.user_repository import UserRepository
-from app.schemas.user import UserResponse, UserProfile, UserUpdate, UserAdminUpdate
+from app.schemas.user import UserAdminUpdate, UserProfile, UserResponse, UserUpdate
 from app.services.auth_service import AuthService
-
 
 router = APIRouter()
 
 
 @router.get("/profile", response_model=UserProfile)
-async def get_user_profile(
-    current_user: User = Depends(get_current_active_user)
-):
+async def get_user_profile(current_user: User = Depends(get_current_active_user)):
     """
     Get current user's profile.
-    
+
     Returns the complete profile information for the currently
     authenticated user.
-    
+
     Args:
         current_user: Currently authenticated user
-        
+
     Returns:
         User profile information
     """
@@ -55,7 +49,7 @@ async def get_user_profile(
         created_at=current_user.created_at.isoformat(),
         updated_at=current_user.updated_at.isoformat(),
         full_name=current_user.full_name,
-        full_address=current_user.full_address
+        full_address=current_user.full_address,
     )
 
 
@@ -63,24 +57,24 @@ async def get_user_profile(
 async def update_user_profile(
     user_update: UserUpdate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update current user's profile.
-    
+
     Allows users to update their own profile information.
-    
+
     Args:
         user_update: Updated user information
         current_user: Currently authenticated user
         db: Database session
-        
+
     Returns:
         Updated user profile
     """
     user_repo = UserRepository(db)
     updated_user = user_repo.update(current_user, user_update)
-    
+
     return UserProfile(
         id=str(updated_user.id),
         email=updated_user.email,
@@ -100,24 +94,26 @@ async def update_user_profile(
         created_at=updated_user.created_at.isoformat(),
         updated_at=updated_user.updated_at.isoformat(),
         full_name=updated_user.full_name,
-        full_address=updated_user.full_address
+        full_address=updated_user.full_address,
     )
 
 
 @router.get("", response_model=List[UserResponse])
 async def list_users(
     skip: int = Query(0, ge=0, description="Number of users to skip"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of users to return"),
+    limit: int = Query(
+        100, ge=1, le=1000, description="Maximum number of users to return"
+    ),
     role: UserRole = Query(None, description="Filter by user role"),
     is_active: bool = Query(None, description="Filter by active status"),
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     List users (admin only).
-    
+
     Returns a paginated list of users. Only accessible by admin users.
-    
+
     Args:
         skip: Number of users to skip for pagination
         limit: Maximum number of users to return
@@ -125,21 +121,21 @@ async def list_users(
         is_active: Optional active status filter
         current_user: Currently authenticated admin user
         db: Database session
-        
+
     Returns:
         List of users matching the criteria
     """
     user_repo = UserRepository(db)
-    
+
     # Build filter criteria
     filters = {}
     if role is not None:
         filters["role"] = role
     if is_active is not None:
         filters["is_active"] = is_active
-    
+
     users = user_repo.get_multi(skip=skip, limit=limit, **filters)
-    
+
     return [
         UserResponse(
             id=str(user.id),
@@ -158,7 +154,7 @@ async def list_users(
             postal_code=user.postal_code,
             country=user.country,
             created_at=user.created_at.isoformat(),
-            updated_at=user.updated_at.isoformat()
+            updated_at=user.updated_at.isoformat(),
         )
         for user in users
     ]
@@ -168,41 +164,39 @@ async def list_users(
 async def get_user(
     user_id: str,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Get user by ID.
-    
+
     Returns user information. Regular users can only access their own
     information, while admin users can access any user.
-    
+
     Args:
         user_id: User ID to retrieve
         current_user: Currently authenticated user
         db: Database session
-        
+
     Returns:
         User information
-        
+
     Raises:
         HTTPException: If user not found or access denied
     """
     user_repo = UserRepository(db)
     user = user_repo.get_by_id(user_id)
-    
+
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
-    
+
     # Check permissions: users can only access their own data, admins can access any
     if str(current_user.id) != user_id and not current_user.is_admin():
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions"
         )
-    
+
     return UserResponse(
         id=str(user.id),
         email=user.email,
@@ -220,7 +214,7 @@ async def get_user(
         postal_code=user.postal_code,
         country=user.country,
         created_at=user.created_at.isoformat(),
-        updated_at=user.updated_at.isoformat()
+        updated_at=user.updated_at.isoformat(),
     )
 
 
@@ -229,45 +223,44 @@ async def update_user(
     user_id: str,
     user_update: UserAdminUpdate,
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update user (admin only).
-    
+
     Allows admin users to update any user's information, including
     role and status changes.
-    
+
     Args:
         user_id: User ID to update
         user_update: Updated user information
         current_user: Currently authenticated admin user
         db: Database session
-        
+
     Returns:
         Updated user information
-        
+
     Raises:
         HTTPException: If user not found or email already taken
     """
     user_repo = UserRepository(db)
     user = user_repo.get_by_id(user_id)
-    
+
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
-    
+
     # Check if email is being changed and if it's already taken
     if user_update.email and user_update.email != user.email:
         if user_repo.is_email_taken(user_update.email, user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
+                detail="Email already registered",
             )
-    
+
     updated_user = user_repo.update(user, user_update)
-    
+
     return UserResponse(
         id=str(updated_user.id),
         email=updated_user.email,
@@ -285,7 +278,7 @@ async def update_user(
         postal_code=updated_user.postal_code,
         country=updated_user.country,
         created_at=updated_user.created_at.isoformat(),
-        updated_at=updated_user.updated_at.isoformat()
+        updated_at=updated_user.updated_at.isoformat(),
     )
 
 
@@ -293,33 +286,32 @@ async def update_user(
 async def deactivate_user(
     user_id: str,
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Deactivate user account (admin only).
-    
+
     Deactivates a user account, preventing them from logging in.
-    
+
     Args:
         user_id: User ID to deactivate
         current_user: Currently authenticated admin user
         db: Database session
-        
+
     Returns:
         Updated user information
-        
+
     Raises:
         HTTPException: If user not found
     """
     auth_service = AuthService(db)
     user = auth_service.deactivate_user(user_id)
-    
+
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
-    
+
     return UserResponse(
         id=str(user.id),
         email=user.email,
@@ -337,7 +329,7 @@ async def deactivate_user(
         postal_code=user.postal_code,
         country=user.country,
         created_at=user.created_at.isoformat(),
-        updated_at=user.updated_at.isoformat()
+        updated_at=user.updated_at.isoformat(),
     )
 
 
@@ -345,33 +337,32 @@ async def deactivate_user(
 async def activate_user(
     user_id: str,
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Activate user account (admin only).
-    
+
     Activates a previously deactivated user account.
-    
+
     Args:
         user_id: User ID to activate
         current_user: Currently authenticated admin user
         db: Database session
-        
+
     Returns:
         Updated user information
-        
+
     Raises:
         HTTPException: If user not found
     """
     auth_service = AuthService(db)
     user = auth_service.activate_user(user_id)
-    
+
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
-    
+
     return UserResponse(
         id=str(user.id),
         email=user.email,
@@ -389,5 +380,5 @@ async def activate_user(
         postal_code=user.postal_code,
         country=user.country,
         created_at=user.created_at.isoformat(),
-        updated_at=user.updated_at.isoformat()
+        updated_at=user.updated_at.isoformat(),
     )

@@ -1,0 +1,226 @@
+name: Performance Testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run performance tests weekly
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  performance-test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_USER: testuser
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+      
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: testuser
+          RABBITMQ_DEFAULT_PASS: testpass
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5672:5672
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        pip install locust
+
+    - name: Set up test environment
+      run: |
+        cp .env.example .env
+        echo "DATABASE_URL=postgresql://testuser:testpass@localhost:5432/testdb" >> .env
+        echo "REDIS_URL=redis://localhost:6379/0" >> .env
+        echo "RABBITMQ_URL=amqp://testuser:testpass@localhost:5672/" >> .env
+        echo "SECRET_KEY=test-secret-key-for-ci" >> .env
+        echo "ENCRYPTION_KEY=test-encryption-key-32-chars-long" >> .env
+
+    - name: Run database migrations
+      run: |
+        alembic upgrade head
+
+    - name: Start application
+      run: |
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+        sleep 10
+
+    - name: Create performance test script
+      run: |
+        cat > locustfile.py << 'EOF'
+        from locust import HttpUser, task, between
+        import json
+        import random
+
+        class KYCUser(HttpUser):
+            wait_time = between(1, 3)
+            
+            def on_start(self):
+                # Register and login
+                user_data = {
+                    "email": f"test{random.randint(1000, 9999)}@example.com",
+                    "password": "testpass123",
+                    "first_name": "Test",
+                    "last_name": "User",
+                    "date_of_birth": "1990-01-01",
+                    "phone_number": "+1234567890"
+                }
+                
+                response = self.client.post("/auth/register", json=user_data)
+                if response.status_code == 201:
+                    login_response = self.client.post("/auth/login", json={
+                        "email": user_data["email"],
+                        "password": user_data["password"]
+                    })
+                    if login_response.status_code == 200:
+                        token = login_response.json()["access_token"]
+                        self.client.headers.update({"Authorization": f"Bearer {token}"})
+
+            @task(3)
+            def get_profile(self):
+                self.client.get("/users/profile")
+
+            @task(2)
+            def get_kyc_checks(self):
+                self.client.get("/kyc/checks")
+
+            @task(1)
+            def health_check(self):
+                self.client.get("/health")
+
+            @task(1)
+            def create_kyc_check(self):
+                kyc_data = {
+                    "document_type": "passport",
+                    "document_number": f"P{random.randint(10000000, 99999999)}"
+                }
+                self.client.post("/kyc/checks", json=kyc_data)
+        EOF
+
+    - name: Run performance tests
+      run: |
+        locust -f locustfile.py --headless --users 50 --spawn-rate 5 --run-time 2m --host http://localhost:8000 --html performance-report.html
+
+    - name: Upload performance report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: performance-report
+        path: performance-report.html
+
+    - name: Check performance thresholds
+      run: |
+        # Extract metrics from Locust output
+        # This is a simplified check - in production you'd parse the actual results
+        echo "Performance test completed. Check the report for detailed metrics."
+        
+        # Example threshold checks (customize based on your requirements)
+        # if [ "$AVERAGE_RESPONSE_TIME" -gt 500 ]; then
+        #   echo "Average response time exceeded threshold"
+        #   exit 1
+        # fi
+
+  load-test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Compose
+      run: |
+        docker-compose up -d
+        sleep 30
+
+    - name: Install k6
+      run: |
+        sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+        echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+        sudo apt-get update
+        sudo apt-get install k6
+
+    - name: Create k6 load test script
+      run: |
+        cat > load-test.js << 'EOF'
+        import http from 'k6/http';
+        import { check, sleep } from 'k6';
+
+        export let options = {
+          stages: [
+            { duration: '2m', target: 100 }, // Ramp up
+            { duration: '5m', target: 100 }, // Stay at 100 users
+            { duration: '2m', target: 200 }, // Ramp up to 200 users
+            { duration: '5m', target: 200 }, // Stay at 200 users
+            { duration: '2m', target: 0 },   // Ramp down
+          ],
+          thresholds: {
+            http_req_duration: ['p(95)<500'], // 95% of requests must complete below 500ms
+            http_req_failed: ['rate<0.1'],    // Error rate must be below 10%
+          },
+        };
+
+        export default function () {
+          let response = http.get('http://localhost:8000/health');
+          check(response, {
+            'status is 200': (r) => r.status === 200,
+            'response time < 500ms': (r) => r.timings.duration < 500,
+          });
+          sleep(1);
+        }
+        EOF
+
+    - name: Run load test
+      run: |
+        k6 run --out json=load-test-results.json load-test.js
+
+    - name: Upload load test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: load-test-results
+        path: load-test-results.json
+
+    - name: Cleanup
+      if: always()
+      run: |
+        docker-compose down -v

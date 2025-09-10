@@ -1,9 +1,10 @@
 """
 API version 1 router configuration.
 """
+
 from fastapi import APIRouter
 
-from app.api.v1 import auth, users, kyc, webhooks
+from app.api.v1 import auth, gdpr, kyc, users, webhooks
 
 api_router = APIRouter()
 
@@ -18,3 +19,6 @@ api_router.include_router(kyc.router, prefix="/kyc", tags=["kyc"])
 
 # Include webhook routes
 api_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
+
+# Include GDPR compliance routes
+api_router.include_router(gdpr.router, tags=["gdpr"])

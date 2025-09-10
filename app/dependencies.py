@@ -1,6 +1,7 @@
 """
 FastAPI dependency injection utilities.
 """
+
 from fastapi import Depends
 from sqlalchemy.orm import Session
 

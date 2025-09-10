@@ -1,16 +1,17 @@
 """
 API middleware package.
 """
+
 from .webhook_auth import (
-    WebhookAuthenticationMiddleware,
     WebhookAuthDependency,
+    WebhookAuthenticationMiddleware,
+    get_webhook_auth,
     webhook_auth_dependency,
-    get_webhook_auth
 )
 
 __all__ = [
     "WebhookAuthenticationMiddleware",
-    "WebhookAuthDependency", 
+    "WebhookAuthDependency",
     "webhook_auth_dependency",
-    "get_webhook_auth"
+    "get_webhook_auth",
 ]

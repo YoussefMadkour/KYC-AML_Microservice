@@ -1,6 +1,7 @@
 """
 FastAPI application entry point for KYC/AML microservice.
 """
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -34,10 +35,10 @@ app.add_middleware(
     WebhookAuthenticationMiddleware,
     webhook_paths={
         "/api/v1/webhooks/kyc/": "webhook",
-        "/api/v1/webhooks/aml/": "webhook"
+        "/api/v1/webhooks/aml/": "webhook",
     },
     require_timestamp_validation=True,
-    log_verification_details=True
+    log_verification_details=True,
 )
 
 # Include API routes
@@ -52,4 +53,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    uvicorn.run(app, host=settings.HOST, port=settings.PORT)

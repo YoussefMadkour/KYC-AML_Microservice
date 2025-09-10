@@ -107,7 +107,7 @@
   - Test complete containerized deployment locally
   - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
-- [ ] 14. Implement data encryption and security features
+- [x] 14. Implement data encryption and security features
   - Set up field-level encryption for sensitive data (passport numbers, phone)
   - Implement secure key management using environment variables
   - Add data masking for logging sensitive information
@@ -123,7 +123,7 @@
   - Add performance tests for API endpoints and database queries
   - _Requirements: 8.1, 8.2_
 
-- [ ] 16. Set up CI/CD pipeline with GitHub Actions
+- [x] 16. Set up CI/CD pipeline with GitHub Actions
   - Create GitHub Actions workflow for automated testing
   - Add code quality checks (linting, type checking, security scanning)
   - Implement automated Docker image building and tagging

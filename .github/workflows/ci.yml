@@ -1,0 +1,303 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  PYTHON_VERSION: "3.12"
+  POETRY_VERSION: "1.7.1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_USER: testuser
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+      
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: testuser
+          RABBITMQ_DEFAULT_PASS: testpass
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5672:5672
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+
+    - name: Set up test environment
+      run: |
+        cp .env.example .env
+        echo "DATABASE_URL=postgresql://testuser:testpass@localhost:5432/testdb" >> .env
+        echo "REDIS_URL=redis://localhost:6379/0" >> .env
+        echo "RABBITMQ_URL=amqp://testuser:testpass@localhost:5672/" >> .env
+        echo "SECRET_KEY=test-secret-key-for-ci" >> .env
+        echo "ENCRYPTION_KEY=test-encryption-key-32-chars-long" >> .env
+
+    - name: Run database migrations
+      run: |
+        alembic upgrade head
+
+    - name: Run unit tests
+      run: |
+        pytest tests/unit/ -v --cov=app --cov-report=xml --cov-report=term-missing
+
+    - name: Run integration tests
+      run: |
+        pytest tests/integration/ -v --cov=app --cov-append --cov-report=xml --cov-report=term-missing
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  code-quality:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-quality-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-quality-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+
+    - name: Run Black (code formatting check)
+      run: |
+        black --check --diff app/ tests/
+
+    - name: Run isort (import sorting check)
+      run: |
+        isort --check-only --diff app/ tests/
+
+    - name: Run flake8 (linting)
+      run: |
+        flake8 app/ tests/ --max-line-length=88 --extend-ignore=E203,W503
+
+    - name: Run mypy (type checking)
+      run: |
+        mypy app/ --ignore-missing-imports
+
+    - name: Run bandit (security scanning)
+      run: |
+        bandit -r app/ -f json -o bandit-report.json || true
+        bandit -r app/ --severity-level medium
+
+    - name: Upload bandit results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: bandit-report
+        path: bandit-report.json
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install safety
+
+    - name: Run safety (dependency vulnerability scan)
+      run: |
+        safety check --json --output safety-report.json || true
+        safety check
+
+    - name: Upload safety results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: safety-report
+        path: safety-report.json
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [test, code-quality]
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ secrets.DOCKER_USERNAME }}/kyc-aml-microservice
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push API image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push Worker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.worker
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: |
+          ${{ secrets.DOCKER_USERNAME }}/kyc-aml-microservice:worker-${{ github.sha }}
+          ${{ secrets.DOCKER_USERNAME }}/kyc-aml-microservice:worker-latest
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.event_name != 'pull_request'
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Run integration tests with Docker Compose
+      run: |
+        # Use the built images for integration testing
+        export API_IMAGE="${{ secrets.DOCKER_USERNAME }}/kyc-aml-microservice:${{ github.sha }}"
+        export WORKER_IMAGE="${{ secrets.DOCKER_USERNAME }}/kyc-aml-microservice:worker-${{ github.sha }}"
+        
+        # Start services
+        docker-compose -f docker-compose.yml up -d
+        
+        # Wait for services to be ready
+        sleep 30
+        
+        # Run health checks
+        docker-compose exec -T api curl -f http://localhost:8000/health || exit 1
+        
+        # Run integration tests
+        docker-compose exec -T api pytest tests/integration/ -v
+        
+        # Cleanup
+        docker-compose down -v
+
+  quality-gate:
+    runs-on: ubuntu-latest
+    needs: [test, code-quality, security-scan]
+    if: always()
+    
+    steps:
+    - name: Check test results
+      if: needs.test.result != 'success'
+      run: |
+        echo "Tests failed"
+        exit 1
+
+    - name: Check code quality results
+      if: needs.code-quality.result != 'success'
+      run: |
+        echo "Code quality checks failed"
+        exit 1
+
+    - name: Check security scan results
+      if: needs.security-scan.result != 'success'
+      run: |
+        echo "Security scan failed"
+        exit 1
+
+    - name: Quality gate passed
+      run: |
+        echo "All quality checks passed!"
