@@ -42,6 +42,13 @@ class AuthorizationError(KYCBaseException):
         super().__init__(message, "AUTHORIZATION_ERROR", kwargs)
 
 
+class BusinessLogicError(KYCBaseException):
+    """Raised when business logic rules are violated."""
+    
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, "BUSINESS_LOGIC_ERROR", kwargs)
+
+
 class KYCCheckNotFoundError(KYCBaseException):
     """Raised when KYC check is not found."""
     

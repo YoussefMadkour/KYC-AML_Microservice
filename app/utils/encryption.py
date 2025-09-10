@@ -75,6 +75,16 @@ class FieldEncryption:
 field_encryption = FieldEncryption()
 
 
+def encrypt_field(value: str) -> str:
+    """Encrypt a field value using the global encryption instance."""
+    return field_encryption.encrypt(value)
+
+
+def decrypt_field(encrypted_value: str) -> str:
+    """Decrypt a field value using the global encryption instance."""
+    return field_encryption.decrypt(encrypted_value)
+
+
 class EncryptedType(TypeDecorator):
     """SQLAlchemy custom type for encrypted fields."""
     

@@ -1,0 +1,64 @@
+# Docker Compose configuration for task processing infrastructure
+# This demonstrates the Celery + RabbitMQ + Redis setup for task 7
+
+version: '3.8'
+
+services:
+  # RabbitMQ - Message broker for Celery
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: kyc_rabbitmq
+    ports:
+      - "5672:5672"      # AMQP port
+      - "15672:15672"    # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis - Result backend and caching
+  redis:
+    image: redis:7-alpine
+    container_name: kyc_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL - Main database
+  postgres:
+    image: postgres:15-alpine
+    container_name: kyc_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: kyc_db
+      POSTGRES_USER: kyc_user
+      POSTGRES_PASSWORD: kyc_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kyc_user -d kyc_db"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  rabbitmq_data:
+  redis_data:
+  postgres_data:
+
+networks:
+  default:
+    name: kyc_network
