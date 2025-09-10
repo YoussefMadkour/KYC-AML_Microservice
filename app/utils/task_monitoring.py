@@ -1,317 +1,428 @@
 """
-Task monitoring and logging utilities.
+Task monitoring utilities for tracking KYC processing progress.
 """
 import logging
-import time
-from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta, timezone
-from celery import current_app
-from app.worker import celery_app
-from app.core.config import settings
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+from uuid import UUID
 
-logger = logging.getLogger(__name__)
+from celery.result import AsyncResult
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.models.kyc import KYCStatus
+from app.repositories.kyc_repository import KYCRepository
+from app.utils.logging import get_logger
+from app.worker import celery_app
+
+logger = get_logger(__name__)
 
 
 class TaskMonitor:
-    """
-    Task monitoring utility for tracking Celery task performance and status.
-    """
+    """Monitor and track task execution progress."""
     
-    def __init__(self, celery_app_instance=None):
-        self.celery_app = celery_app_instance or celery_app
-    
-    def get_active_tasks(self) -> Dict[str, List[Dict[str, Any]]]:
+    def __init__(self, db: Session = None):
         """
-        Get currently active tasks across all workers.
+        Initialize task monitor.
         
+        Args:
+            db: Database session (optional, will create if not provided)
+        """
+        self.db = db or next(get_db())
+        self.kyc_repository = KYCRepository(self.db)
+    
+    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get detailed task status information.
+        
+        Args:
+            task_id: Celery task ID
+            
         Returns:
-            Dictionary mapping worker names to their active tasks
+            Task status information or None if not found
         """
         try:
-            inspect = self.celery_app.control.inspect()
-            active_tasks = inspect.active()
+            result = celery_app.AsyncResult(task_id)
             
-            if not active_tasks:
-                return {}
-            
-            # Format task information
-            formatted_tasks = {}
-            for worker, tasks in active_tasks.items():
-                formatted_tasks[worker] = [
-                    {
-                        "task_id": task["id"],
-                        "task_name": task["name"],
-                        "args": task.get("args", []),
-                        "kwargs": task.get("kwargs", {}),
-                        "time_start": task.get("time_start"),
-                        "worker": worker,
-                    }
-                    for task in tasks
-                ]
-            
-            return formatted_tasks
-            
-        except Exception as e:
-            logger.error(f"Error getting active tasks: {e}")
-            return {}
-    
-    def get_scheduled_tasks(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Get scheduled (reserved) tasks across all workers.
-        
-        Returns:
-            Dictionary mapping worker names to their scheduled tasks
-        """
-        try:
-            inspect = self.celery_app.control.inspect()
-            scheduled_tasks = inspect.scheduled()
-            
-            if not scheduled_tasks:
-                return {}
-            
-            # Format task information
-            formatted_tasks = {}
-            for worker, tasks in scheduled_tasks.items():
-                formatted_tasks[worker] = [
-                    {
-                        "task_id": task["request"]["id"],
-                        "task_name": task["request"]["task"],
-                        "args": task["request"].get("args", []),
-                        "kwargs": task["request"].get("kwargs", {}),
-                        "eta": task.get("eta"),
-                        "priority": task.get("priority"),
-                        "worker": worker,
-                    }
-                    for task in tasks
-                ]
-            
-            return formatted_tasks
-            
-        except Exception as e:
-            logger.error(f"Error getting scheduled tasks: {e}")
-            return {}
-    
-    def get_worker_stats(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Get worker statistics and health information.
-        
-        Returns:
-            Dictionary mapping worker names to their statistics
-        """
-        try:
-            inspect = self.celery_app.control.inspect()
-            stats = inspect.stats()
-            
-            if not stats:
-                return {}
-            
-            # Format worker statistics
-            formatted_stats = {}
-            for worker, worker_stats in stats.items():
-                formatted_stats[worker] = {
-                    "status": "online",
-                    "pool": worker_stats.get("pool", {}),
-                    "total_tasks": worker_stats.get("total", {}),
-                    "rusage": worker_stats.get("rusage", {}),
-                    "clock": worker_stats.get("clock"),
-                    "pid": worker_stats.get("pid"),
-                    "broker": worker_stats.get("broker", {}),
-                }
-            
-            return formatted_stats
-            
-        except Exception as e:
-            logger.error(f"Error getting worker stats: {e}")
-            return {}
-    
-    def get_queue_lengths(self) -> Dict[str, int]:
-        """
-        Get the length of each queue.
-        
-        Returns:
-            Dictionary mapping queue names to their lengths
-        """
-        try:
-            # This would require additional Redis connection for accurate queue lengths
-            # For now, return placeholder data
-            return {
-                "kyc_queue": 0,
-                "webhook_queue": 0,
-                "celery": 0,
+            status_info = {
+                "task_id": task_id,
+                "status": result.status,
+                "ready": result.ready(),
+                "successful": result.successful() if result.ready() else None,
+                "failed": result.failed() if result.ready() else None,
+                "result": result.result if result.ready() else None,
+                "traceback": result.traceback if result.failed() else None,
+                "date_done": result.date_done.isoformat() if result.date_done else None,
+                "task_name": getattr(result, 'task_name', None),
+                "args": getattr(result, 'args', None),
+                "kwargs": getattr(result, 'kwargs', None)
             }
+            
+            # Add retry information if available
+            if hasattr(result, 'retries'):
+                status_info["retries"] = result.retries
+            
+            return status_info
+            
         except Exception as e:
-            logger.error(f"Error getting queue lengths: {e}")
-            return {}
+            logger.error(f"Error getting task status for {task_id}: {e}")
+            return None
     
-    def get_failed_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_kyc_processing_status(self, kyc_check_id: UUID) -> Dict[str, Any]:
         """
-        Get recently failed tasks.
+        Get comprehensive KYC processing status including task information.
         
         Args:
-            limit: Maximum number of failed tasks to return
+            kyc_check_id: KYC check ID
             
         Returns:
-            List of failed task information
+            Comprehensive status information
         """
-        try:
-            # This would require storing failed task information
-            # For now, return empty list as placeholder
-            return []
-        except Exception as e:
-            logger.error(f"Error getting failed tasks: {e}")
-            return []
+        # Get KYC check from database
+        kyc_check = self.kyc_repository.get_with_documents(kyc_check_id)
+        if not kyc_check:
+            return {"error": "KYC check not found"}
+        
+        # Base status information
+        status_info = {
+            "kyc_check_id": str(kyc_check_id),
+            "status": kyc_check.status.value,
+            "is_completed": kyc_check.is_completed,
+            "is_pending_review": kyc_check.is_pending_review,
+            "provider": kyc_check.provider,
+            "provider_reference": kyc_check.provider_reference,
+            "submitted_at": kyc_check.submitted_at.isoformat() if kyc_check.submitted_at else None,
+            "completed_at": kyc_check.completed_at.isoformat() if kyc_check.completed_at else None,
+            "processing_time_seconds": kyc_check.processing_time_seconds,
+            "documents_count": len(kyc_check.documents),
+            "risk_score": kyc_check.risk_score,
+            "notes": kyc_check.notes,
+            "rejection_reason": kyc_check.rejection_reason
+        }
+        
+        # Add progress percentage
+        status_progress = {
+            KYCStatus.PENDING: 10,
+            KYCStatus.IN_PROGRESS: 50,
+            KYCStatus.MANUAL_REVIEW: 80,
+            KYCStatus.APPROVED: 100,
+            KYCStatus.REJECTED: 100,
+            KYCStatus.EXPIRED: 100
+        }
+        status_info["progress_percentage"] = status_progress.get(kyc_check.status, 0)
+        
+        # Add estimated completion time for in-progress checks
+        if kyc_check.status == KYCStatus.IN_PROGRESS and kyc_check.submitted_at:
+            elapsed = datetime.utcnow() - kyc_check.submitted_at
+            # Estimate 5-10 minutes for typical processing
+            estimated_total = timedelta(minutes=7)
+            if elapsed < estimated_total:
+                remaining = estimated_total - elapsed
+                status_info["estimated_completion_seconds"] = int(remaining.total_seconds())
+            else:
+                status_info["estimated_completion_seconds"] = 0
+        
+        # Add verification result summary if available
+        if kyc_check.verification_result:
+            result_summary = self._extract_verification_summary(kyc_check.verification_result)
+            status_info["verification_summary"] = result_summary
+        
+        return status_info
     
-    def get_task_history(
-        self, 
-        task_name: Optional[str] = None, 
-        hours: int = 24
-    ) -> List[Dict[str, Any]]:
+    def get_active_tasks_for_kyc(self, kyc_check_id: UUID) -> List[Dict[str, Any]]:
         """
-        Get task execution history.
+        Get active Celery tasks related to a specific KYC check.
         
         Args:
-            task_name: Filter by specific task name (optional)
-            hours: Number of hours to look back
+            kyc_check_id: KYC check ID
             
         Returns:
-            List of task execution records
+            List of active task information
         """
+        active_tasks = []
+        
         try:
-            # This would require storing task execution history
-            # For now, return empty list as placeholder
-            return []
+            # Get active tasks from Celery
+            inspect = celery_app.control.inspect()
+            active = inspect.active()
+            
+            if active:
+                for worker, tasks in active.items():
+                    for task in tasks:
+                        # Check if task is related to this KYC check
+                        if self._is_kyc_related_task(task, str(kyc_check_id)):
+                            task_info = {
+                                "task_id": task.get("id"),
+                                "task_name": task.get("name"),
+                                "worker": worker,
+                                "args": task.get("args", []),
+                                "kwargs": task.get("kwargs", {}),
+                                "time_start": task.get("time_start"),
+                                "acknowledged": task.get("acknowledged", False),
+                                "delivery_info": task.get("delivery_info", {})
+                            }
+                            active_tasks.append(task_info)
+            
         except Exception as e:
-            logger.error(f"Error getting task history: {e}")
-            return []
+            logger.error(f"Error getting active tasks for KYC {kyc_check_id}: {e}")
+        
+        return active_tasks
     
-    def health_check(self) -> Dict[str, Any]:
+    def get_task_history_for_kyc(self, kyc_check_id: UUID, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Perform a comprehensive health check of the task system.
+        Get task execution history for a KYC check.
+        
+        Note: This is a simplified implementation. In production, you might want
+        to store task history in a database for better tracking.
+        
+        Args:
+            kyc_check_id: KYC check ID
+            limit: Maximum number of history entries to return
+            
+        Returns:
+            List of task history entries
+        """
+        # This is a placeholder implementation
+        # In a real system, you would store task execution history in a database
+        history = []
+        
+        try:
+            # Get recent task results from Celery backend
+            # This is limited by Celery's result expiration settings
+            
+            # For now, return basic history based on KYC check status changes
+            kyc_check = self.kyc_repository.get(kyc_check_id)
+            if kyc_check:
+                history.append({
+                    "timestamp": kyc_check.created_at.isoformat(),
+                    "event": "kyc_check_created",
+                    "status": KYCStatus.PENDING.value,
+                    "details": "KYC check created and queued for processing"
+                })
+                
+                if kyc_check.status != KYCStatus.PENDING:
+                    history.append({
+                        "timestamp": kyc_check.updated_at.isoformat(),
+                        "event": "status_updated",
+                        "status": kyc_check.status.value,
+                        "details": f"Status updated to {kyc_check.status.value}"
+                    })
+                
+                if kyc_check.completed_at:
+                    history.append({
+                        "timestamp": kyc_check.completed_at.isoformat(),
+                        "event": "processing_completed",
+                        "status": kyc_check.status.value,
+                        "details": "KYC processing completed"
+                    })
+        
+        except Exception as e:
+            logger.error(f"Error getting task history for KYC {kyc_check_id}: {e}")
+        
+        return history[:limit]
+    
+    def get_system_task_statistics(self) -> Dict[str, Any]:
+        """
+        Get system-wide task processing statistics.
         
         Returns:
-            Health check results
+            Task processing statistics
         """
-        health_status = {
-            "status": "healthy",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "checks": {},
+        stats = {
+            "active_tasks": 0,
+            "scheduled_tasks": 0,
+            "reserved_tasks": 0,
+            "workers": [],
+            "queues": {},
+            "task_types": {}
         }
         
         try:
-            # Check worker connectivity
-            inspect = self.celery_app.control.inspect()
-            stats = inspect.stats()
+            inspect = celery_app.control.inspect()
             
-            if stats:
-                health_status["checks"]["workers"] = {
-                    "status": "healthy",
-                    "worker_count": len(stats),
-                    "workers": list(stats.keys()),
-                }
-            else:
-                health_status["checks"]["workers"] = {
-                    "status": "unhealthy",
-                    "error": "No workers available",
-                }
-                health_status["status"] = "unhealthy"
+            # Get active tasks
+            active = inspect.active()
+            if active:
+                for worker, tasks in active.items():
+                    stats["active_tasks"] += len(tasks)
+                    stats["workers"].append({
+                        "name": worker,
+                        "active_tasks": len(tasks)
+                    })
+                    
+                    # Count task types
+                    for task in tasks:
+                        task_name = task.get("name", "unknown")
+                        stats["task_types"][task_name] = stats["task_types"].get(task_name, 0) + 1
             
-            # Check broker connectivity
+            # Get scheduled tasks
+            scheduled = inspect.scheduled()
+            if scheduled:
+                for worker, tasks in scheduled.items():
+                    stats["scheduled_tasks"] += len(tasks)
+            
+            # Get reserved tasks
+            reserved = inspect.reserved()
+            if reserved:
+                for worker, tasks in reserved.items():
+                    stats["reserved_tasks"] += len(tasks)
+            
+            # Get queue information
             try:
-                # Simple ping to check broker
-                inspect.ping()
-                health_status["checks"]["broker"] = {
-                    "status": "healthy",
-                    "broker_url": settings.CELERY_BROKER_URL,
-                }
+                queue_info = inspect.active_queues()
+                if queue_info:
+                    for worker, queues in queue_info.items():
+                        for queue in queues:
+                            queue_name = queue.get("name", "unknown")
+                            if queue_name not in stats["queues"]:
+                                stats["queues"][queue_name] = {
+                                    "workers": [],
+                                    "routing_key": queue.get("routing_key"),
+                                    "exchange": queue.get("exchange", {}).get("name") if queue.get("exchange") else None
+                                }
+                            stats["queues"][queue_name]["workers"].append(worker)
             except Exception as e:
-                health_status["checks"]["broker"] = {
-                    "status": "unhealthy",
-                    "error": str(e),
-                }
-                health_status["status"] = "unhealthy"
+                logger.warning(f"Could not get queue information: {e}")
+        
+        except Exception as e:
+            logger.error(f"Error getting system task statistics: {e}")
+        
+        return stats
+    
+    def cancel_kyc_processing(self, kyc_check_id: UUID, reason: str = "Cancelled by user") -> bool:
+        """
+        Cancel active KYC processing tasks.
+        
+        Args:
+            kyc_check_id: KYC check ID
+            reason: Cancellation reason
             
-            # Check result backend
-            try:
-                # Test result backend connectivity
-                test_result = self.celery_app.AsyncResult("test-connection")
-                health_status["checks"]["result_backend"] = {
-                    "status": "healthy",
-                    "backend_url": settings.CELERY_RESULT_BACKEND,
-                }
-            except Exception as e:
-                health_status["checks"]["result_backend"] = {
-                    "status": "unhealthy",
-                    "error": str(e),
-                }
-                health_status["status"] = "unhealthy"
+        Returns:
+            True if cancellation was successful
+        """
+        try:
+            # Get active tasks for this KYC check
+            active_tasks = self.get_active_tasks_for_kyc(kyc_check_id)
+            
+            cancelled_count = 0
+            for task_info in active_tasks:
+                task_id = task_info.get("task_id")
+                if task_id:
+                    try:
+                        # Revoke the task
+                        celery_app.control.revoke(task_id, terminate=True)
+                        cancelled_count += 1
+                        logger.info(f"Cancelled task {task_id} for KYC {kyc_check_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to cancel task {task_id}: {e}")
+            
+            # Update KYC check status if tasks were cancelled
+            if cancelled_count > 0:
+                try:
+                    kyc_check = self.kyc_repository.get(kyc_check_id)
+                    if kyc_check and kyc_check.status in [KYCStatus.PENDING, KYCStatus.IN_PROGRESS]:
+                        self.kyc_repository.update_status(
+                            kyc_check_id=kyc_check_id,
+                            new_status=KYCStatus.REJECTED,
+                            notes=f"Processing cancelled: {reason}",
+                            rejection_reason=reason
+                        )
+                        logger.info(f"Updated KYC {kyc_check_id} status to cancelled")
+                except Exception as e:
+                    logger.error(f"Failed to update KYC status after cancellation: {e}")
+            
+            return cancelled_count > 0
             
         except Exception as e:
-            logger.error(f"Error during health check: {e}")
-            health_status["status"] = "unhealthy"
-            health_status["error"] = str(e)
+            logger.error(f"Error cancelling KYC processing for {kyc_check_id}: {e}")
+            return False
+    
+    def _extract_verification_summary(self, verification_result: Dict) -> Dict[str, Any]:
+        """
+        Extract summary information from verification result.
         
-        return health_status
+        Args:
+            verification_result: Full verification result
+            
+        Returns:
+            Summary information
+        """
+        summary = {}
+        
+        try:
+            if "overall_outcome" in verification_result:
+                summary["outcome"] = verification_result["overall_outcome"]
+            
+            if "confidence_score" in verification_result:
+                summary["confidence"] = verification_result["confidence_score"]
+            
+            if "risk_level" in verification_result:
+                summary["risk_level"] = verification_result["risk_level"]
+            
+            if "processing_time_ms" in verification_result:
+                summary["processing_time_ms"] = verification_result["processing_time_ms"]
+            
+            # Count document results
+            if "document_results" in verification_result:
+                doc_results = verification_result["document_results"]
+                summary["documents_processed"] = len(doc_results)
+                summary["documents_approved"] = sum(
+                    1 for doc in doc_results 
+                    if doc.get("status") == "approved"
+                )
+            
+            # Include biometric result if available
+            if "biometric_result" in verification_result and verification_result["biometric_result"]:
+                biometric = verification_result["biometric_result"]
+                summary["biometric_match"] = biometric.get("face_match_score")
+                summary["liveness_score"] = biometric.get("liveness_score")
+        
+        except Exception as e:
+            logger.error(f"Error extracting verification summary: {e}")
+        
+        return summary
+    
+    def _is_kyc_related_task(self, task_info: Dict, kyc_check_id: str) -> bool:
+        """
+        Check if a task is related to a specific KYC check.
+        
+        Args:
+            task_info: Task information from Celery
+            kyc_check_id: KYC check ID to match
+            
+        Returns:
+            True if task is related to the KYC check
+        """
+        try:
+            # Check task name
+            task_name = task_info.get("name", "")
+            if not task_name.startswith("app.tasks.kyc_tasks"):
+                return False
+            
+            # Check args for KYC check ID
+            args = task_info.get("args", [])
+            if args and len(args) > 0 and str(args[0]) == kyc_check_id:
+                return True
+            
+            # Check kwargs for KYC check ID
+            kwargs = task_info.get("kwargs", {})
+            if kwargs.get("kyc_check_id") == kyc_check_id:
+                return True
+            
+            return False
+            
+        except Exception:
+            return False
 
 
-class TaskLogger:
+def get_task_monitor(db: Session = None) -> TaskMonitor:
     """
-    Enhanced logging for Celery tasks with structured logging.
+    Get a task monitor instance.
+    
+    Args:
+        db: Database session (optional)
+        
+    Returns:
+        TaskMonitor instance
     """
-    
-    def __init__(self, task_name: str, task_id: str):
-        self.task_name = task_name
-        self.task_id = task_id
-        self.logger = logging.getLogger(f"tasks.{task_name}")
-        self.start_time = time.time()
-    
-    def info(self, message: str, **kwargs):
-        """Log info message with task context."""
-        self.logger.info(
-            message,
-            extra={
-                "task_name": self.task_name,
-                "task_id": self.task_id,
-                "duration": time.time() - self.start_time,
-                **kwargs
-            }
-        )
-    
-    def warning(self, message: str, **kwargs):
-        """Log warning message with task context."""
-        self.logger.warning(
-            message,
-            extra={
-                "task_name": self.task_name,
-                "task_id": self.task_id,
-                "duration": time.time() - self.start_time,
-                **kwargs
-            }
-        )
-    
-    def error(self, message: str, **kwargs):
-        """Log error message with task context."""
-        self.logger.error(
-            message,
-            extra={
-                "task_name": self.task_name,
-                "task_id": self.task_id,
-                "duration": time.time() - self.start_time,
-                **kwargs
-            }
-        )
-    
-    def debug(self, message: str, **kwargs):
-        """Log debug message with task context."""
-        self.logger.debug(
-            message,
-            extra={
-                "task_name": self.task_name,
-                "task_id": self.task_id,
-                "duration": time.time() - self.start_time,
-                **kwargs
-            }
-        )
-
-
-# Global task monitor instance
-task_monitor = TaskMonitor()
+    return TaskMonitor(db)
