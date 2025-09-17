@@ -22,7 +22,7 @@ jobs:
     - name: Get PR details
       if: steps.dependabot-check.outputs.is_dependabot == 'true'
       id: pr-details
-      uses: actions/github-script@v6
+      uses: actions/github-script@v8
       with:
         script: |
           const pr = await github.rest.pulls.get({
@@ -43,7 +43,7 @@ jobs:
 
     - name: Wait for CI to complete
       if: steps.dependabot-check.outputs.is_dependabot == 'true'
-      uses: actions/github-script@v6
+      uses: actions/github-script@v8
       with:
         script: |
           const { owner, repo } = context.repo;
@@ -91,7 +91,7 @@ jobs:
 
     - name: Auto-approve and merge
       if: steps.dependabot-check.outputs.is_dependabot == 'true'
-      uses: actions/github-script@v6
+      uses: actions/github-script@v8
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
